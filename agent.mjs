@@ -4,12 +4,8 @@ import path from 'node:path'
 import OpenAI from 'openai'
 
 const API_KEY = process.env.STEP_API_KEY || process.env.OPENAI_API_KEY
-const BASE_URL =
-  process.env.STEP_BASE_URL ||
-  process.env.OPENAI_BASE_URL ||
-  'https://api.stepfun.ai/step_plan/v1'
-const MODEL =
-  process.env.STEP_MODEL || process.env.OPENAI_MODEL || 'step-3.5-flash'
+const BASE_URL = process.env.STEP_BASE_URL || process.env.OPENAI_BASE_URL
+const MODEL = process.env.STEP_MODEL || process.env.OPENAI_MODEL
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || MODEL
 const ROOT_DIR = process.cwd()
 const MAX_STEPS = 100
@@ -123,8 +119,14 @@ function estimateTokensFromText(text) {
     return 0
   }
 
-  const cjkMatches = text.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []
-  const nonCjk = text.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu, '')
+  const cjkMatches =
+    text.match(
+      /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu,
+    ) || []
+  const nonCjk = text.replace(
+    /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu,
+    '',
+  )
   const nonWhitespaceChars = nonCjk.replace(/\s+/g, '').length
 
   return cjkMatches.length + Math.ceil(nonWhitespaceChars / 4)
@@ -161,8 +163,14 @@ function messageToMemoryLine(message) {
     return `User: ${clipText(String(message.content || ''), 240)}`
   }
 
-  if (message.role === 'assistant' && Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
-    const names = message.tool_calls.map((toolCall) => toolCall.function.name).join(', ')
+  if (
+    message.role === 'assistant' &&
+    Array.isArray(message.tool_calls) &&
+    message.tool_calls.length > 0
+  ) {
+    const names = message.tool_calls
+      .map((toolCall) => toolCall.function.name)
+      .join(', ')
     return `Assistant called tools: ${names}`
   }
 
@@ -215,13 +223,19 @@ function buildFallbackMemory(existingMemory, archivedMessages) {
 }
 
 function estimateContextTokens(messages, memory) {
-  return estimateTokensFromText(JSON.stringify(buildMessagesForModel(messages, memory))) +
-    estimateTokensFromText(JSON.stringify(tools))
+  return (
+    estimateTokensFromText(
+      JSON.stringify(buildMessagesForModel(messages, memory)),
+    ) + estimateTokensFromText(JSON.stringify(tools))
+  )
 }
 
 async function summarizeMemory(messages, existingMemory) {
   const fallback = buildFallbackMemory(existingMemory, messages)
-  const historyText = messages.map(formatMessageForSummary).filter(Boolean).join('\n\n')
+  const historyText = messages
+    .map(formatMessageForSummary)
+    .filter(Boolean)
+    .join('\n\n')
 
   try {
     const response = await client.chat.completions.create({
