@@ -31,11 +31,6 @@ import {
 } from './config.js'
 import type { ToolProvider } from './types.js'
 
-type AgentRuntimeState = {
-  messages: AgentMessage[]
-  memory: MemoryState
-}
-
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -83,72 +78,8 @@ async function createChatCompletionWithRetry(
   throw lastError
 }
 
-function createRuntimeState(
-  userPrompt: string,
-  provider: ToolProvider,
-): AgentRuntimeState {
-  return {
-    memory: { value: '' },
-    messages: [
-      createPromptMessage(provider.instructionRole, SYSTEM_PROMPT),
-      createUserMessage(userPrompt),
-    ],
-  }
-}
-
-function createSummarizer(provider: ToolProvider) {
-  // 先绑定 provider 的提示词角色，避免在压缩逻辑里重复拼装参数。
-  return (archivedMessages: AgentMessage[], existingMemory: string) =>
-    summarizeMemory({
-      client,
-      summaryModel: SUMMARY_MODEL,
-      messages: archivedMessages,
-      existingMemory,
-      maxMemoryTokens: MAX_MEMORY_TOKENS,
-      instructionRole: provider.instructionRole,
-    })
-}
-
-async function compactRuntimeContext(
-  state: AgentRuntimeState,
-  provider: ToolProvider,
-): Promise<void> {
-  await compactMessages({
-    messages: state.messages,
-    memory: state.memory,
-    tools: provider.tools,
-    maxContextMessages: MAX_CONTEXT_MESSAGES,
-    summaryTriggerTokens: SUMMARY_TRIGGER_TOKENS,
-    summarize: createSummarizer(provider),
-  })
-}
-
-async function callAssistant(
-  state: AgentRuntimeState,
-  provider: ToolProvider,
-) {
-  const response = await createChatCompletionWithRetry({
-    model: MODEL,
-    parallel_tool_calls: false,
-    tools: provider.tools,
-    messages: buildMessagesForModel(state.messages, state.memory.value),
-  })
-
-  const message = response.choices?.[0]?.message
-  if (!message) {
-    throw new Error(`模型没有返回消息: ${clipText(JSON.stringify(response), 400)}`)
-  }
-
-  const toolCalls = getFunctionToolCalls(message.tool_calls)
-  const assistantContent =
-    normalizeMessageContent(message.content) || message.refusal || ''
-
-  // 当前循环只支持 function tool calls，其他类型会在上游被拒绝。
-  return { assistantContent, toolCalls }
-}
-
 async function executeToolCalls(
-  state: AgentRuntimeState,
+  messages: AgentMessage[],
   provider: ToolProvider,
   toolCalls: ChatCompletionMessageFunctionToolCall[],
 ): Promise<void> {
@@ -173,7 +104,7 @@ async function executeToolCalls(
         : output
 
     console.log(`[${provider.resultLogLabel}]\n${preview}`)
-    state.messages.push(
+    messages.push(
       createToolMessage(toolCall.id, clipText(output, MAX_TOOL_RESULT_TOKENS)),
     )
   }
@@ -183,13 +114,49 @@ export async function runAgent(
   userPrompt: string,
   provider: ToolProvider,
 ): Promise<void> {
-  const state = createRuntimeState(userPrompt, provider)
+  const memory: MemoryState = { value: '' }
+  const messages: AgentMessage[] = [
+    createPromptMessage(provider.instructionRole, SYSTEM_PROMPT),
+    createUserMessage(userPrompt),
+  ]
+
+  const summarize = (archivedMessages: AgentMessage[], existingMemory: string) =>
+    summarizeMemory({
+      client,
+      summaryModel: SUMMARY_MODEL,
+      messages: archivedMessages,
+      existingMemory,
+      maxMemoryTokens: MAX_MEMORY_TOKENS,
+      instructionRole: provider.instructionRole,
+    })
 
   try {
     for (let step = 1; step <= provider.maxSteps; step += 1) {
       console.log(`\n[loop ${step}] calling model...`)
-      await compactRuntimeContext(state, provider)
-      const { assistantContent, toolCalls } = await callAssistant(state, provider)
+      await compactMessages({
+        messages,
+        memory,
+        tools: provider.tools,
+        maxContextMessages: MAX_CONTEXT_MESSAGES,
+        summaryTriggerTokens: SUMMARY_TRIGGER_TOKENS,
+        summarize,
+      })
+
+      const response = await createChatCompletionWithRetry({
+        model: MODEL,
+        parallel_tool_calls: false,
+        tools: provider.tools,
+        messages: buildMessagesForModel(messages, memory.value),
+      })
+
+      const message = response.choices?.[0]?.message
+      if (!message) {
+        throw new Error(`模型没有返回消息: ${clipText(JSON.stringify(response), 400)}`)
+      }
+
+      const toolCalls = getFunctionToolCalls(message.tool_calls)
+      const assistantContent =
+        normalizeMessageContent(message.content) || message.refusal || ''
 
       if (toolCalls.length === 0) {
         console.log('\n[final answer]')
@@ -197,10 +164,8 @@ export async function runAgent(
         return
       }
 
-      state.messages.push(
-        createAssistantToolCallMessage(assistantContent, toolCalls),
-      )
-      await executeToolCalls(state, provider, toolCalls)
+      messages.push(createAssistantToolCallMessage(assistantContent, toolCalls))
+      await executeToolCalls(messages, provider, toolCalls)
     }
   } finally {
     await provider.close()
