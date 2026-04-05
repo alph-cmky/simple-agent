@@ -30,6 +30,7 @@ import {
   inheritProcessEnv,
   normalizeMessageContent,
   parseObjectArguments,
+  readPromptFromCli,
   readNumericEnv,
   summarizeMemory,
   toErrorMessage,
@@ -349,11 +350,12 @@ async function runAgent(userPrompt: string): Promise<void> {
   }
 }
 
-const prompt =
-  process.argv.slice(2).join(' ') ||
-  '打开 https://example.com ，读取页面标题，然后用中文告诉我标题是什么。'
+async function main(): Promise<void> {
+  const prompt = await readPromptFromCli('请输入 Chrome MCP prompt: ')
+  await runAgent(prompt)
+}
 
-runAgent(prompt).catch((error: unknown) => {
+main().catch((error: unknown) => {
   console.error('\n[error]')
   console.error(toErrorMessage(error))
   process.exit(1)

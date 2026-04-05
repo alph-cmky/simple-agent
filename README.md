@@ -42,7 +42,17 @@ cp .env.example .env
 npm start -- "请列出当前目录文件，再读取 package.json，最后告诉我 scripts 是什么"
 ```
 
-如果你不传 prompt，脚本会用内置的一条默认问题。
+如果你不传 prompt，脚本会在终端里提示你输入：
+
+```bash
+npm start
+```
+
+也支持管道输入：
+
+```bash
+echo "请列出当前目录文件，再读取 package.json" | npm start
+```
 
 ## 代码里最关键的部分
 
@@ -122,6 +132,8 @@ npm run start:chrome
 ```bash
 npm run start:chrome -- "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
 ```
+
+如果不带参数，`npm run start:chrome` 也会在终端里提示你输入 prompt。
 
 ### 这个版本和前一个版本的区别
 

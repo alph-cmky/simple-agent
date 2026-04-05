@@ -1,4 +1,5 @@
 import type OpenAI from 'openai'
+import { createInterface } from 'node:readline/promises'
 import type {
   ChatCompletionAssistantMessageParam,
   ChatCompletionDeveloperMessageParam,
@@ -73,6 +74,41 @@ export function toErrorMessage(error: unknown): string {
   }
 
   return String(error)
+}
+
+export async function readPromptFromCli(question: string): Promise<string> {
+  const argPrompt = process.argv.slice(2).join(' ').trim()
+  if (argPrompt) {
+    return argPrompt
+  }
+
+  if (!process.stdin.isTTY) {
+    let pipedPrompt = ''
+    for await (const chunk of process.stdin) {
+      pipedPrompt += typeof chunk === 'string' ? chunk : chunk.toString('utf8')
+    }
+
+    const trimmedPrompt = pipedPrompt.trim()
+    if (trimmedPrompt) {
+      return trimmedPrompt
+    }
+  }
+
+  const readline = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+
+  try {
+    const prompt = (await readline.question(question)).trim()
+    if (!prompt) {
+      throw new Error('prompt 不能为空')
+    }
+
+    return prompt
+  } finally {
+    readline.close()
+  }
 }
 
 export function parseObjectArguments(rawArguments: string): Record<string, unknown> {

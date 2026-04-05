@@ -16,6 +16,7 @@ import {
   createUserMessage,
   getFunctionToolCalls,
   parseObjectArguments,
+  readPromptFromCli,
   readNumericEnv,
   summarizeMemory,
   toErrorMessage,
@@ -95,7 +96,9 @@ function resolveInsideRoot(target = '.'): string {
   return fullPath
 }
 
-async function listFiles({ dir = '.' }: ListFilesArgs = {}): Promise<FileEntry[]> {
+async function listFiles({ dir = '.' }: ListFilesArgs = {}): Promise<
+  FileEntry[]
+> {
   const fullPath = resolveInsideRoot(dir)
   const entries = await fs.readdir(fullPath, { withFileTypes: true })
 
@@ -186,16 +189,23 @@ const tools: ChatCompletionTool[] = [
   readFileTool.definition,
 ]
 
-async function executeTool(toolName: string, rawArguments: string): Promise<string> {
+async function executeTool(
+  toolName: string,
+  rawArguments: string,
+): Promise<string> {
   const parsedArguments = parseObjectArguments(rawArguments)
   let result: ToolResult
 
   switch (toolName) {
     case 'list_files':
-      result = await listFilesTool.execute(listFilesTool.parseArgs(parsedArguments))
+      result = await listFilesTool.execute(
+        listFilesTool.parseArgs(parsedArguments),
+      )
       break
     case 'read_file':
-      result = await readFileTool.execute(readFileTool.parseArgs(parsedArguments))
+      result = await readFileTool.execute(
+        readFileTool.parseArgs(parsedArguments),
+      )
       break
     default:
       throw new Error(`未知工具: ${toolName}`)
@@ -247,7 +257,9 @@ async function runAgent(userPrompt: string): Promise<void> {
 
     const toolCalls = getFunctionToolCalls(message.tool_calls)
     const assistantContent =
-      typeof message.content === 'string' ? message.content : message.refusal || ''
+      typeof message.content === 'string'
+        ? message.content
+        : message.refusal || ''
 
     if (toolCalls.length === 0) {
       console.log('\n[final answer]')
@@ -258,11 +270,16 @@ async function runAgent(userPrompt: string): Promise<void> {
     messages.push(createAssistantToolCallMessage(assistantContent, toolCalls))
 
     for (const toolCall of toolCalls) {
-      console.log(`\n[tool] ${toolCall.function.name}(${toolCall.function.arguments})`)
+      console.log(
+        `\n[tool] ${toolCall.function.name}(${toolCall.function.arguments})`,
+      )
 
       let output: string
       try {
-        output = await executeTool(toolCall.function.name, toolCall.function.arguments)
+        output = await executeTool(
+          toolCall.function.name,
+          toolCall.function.arguments,
+        )
       } catch (error) {
         output = `Tool error: ${toErrorMessage(error)}`
       }
@@ -272,7 +289,10 @@ async function runAgent(userPrompt: string): Promise<void> {
 
       console.log(`[tool result]\n${preview}`)
       messages.push(
-        createToolMessage(toolCall.id, clipText(output, MAX_TOOL_RESULT_TOKENS)),
+        createToolMessage(
+          toolCall.id,
+          clipText(output, MAX_TOOL_RESULT_TOKENS),
+        ),
       )
     }
   }
@@ -280,11 +300,12 @@ async function runAgent(userPrompt: string): Promise<void> {
   throw new Error(`超过最大循环次数: ${MAX_STEPS}`)
 }
 
-const prompt =
-  process.argv.slice(2).join(' ') ||
-  '请先列出当前目录下的文件，再读取 package.json，然后用中文总结这个项目里有哪些 scripts。'
+async function main(): Promise<void> {
+  const prompt = await readPromptFromCli('请输入 prompt: ')
+  await runAgent(prompt)
+}
 
-runAgent(prompt).catch((error: unknown) => {
+main().catch((error: unknown) => {
   console.error('\n[error]')
   console.error(toErrorMessage(error))
   process.exit(1)
