@@ -2,7 +2,6 @@ import type OpenAI from 'openai'
 import { createInterface } from 'node:readline/promises'
 import type {
   ChatCompletionAssistantMessageParam,
-  ChatCompletionDeveloperMessageParam,
   ChatCompletionMessageFunctionToolCall,
   ChatCompletionMessageParam,
   ChatCompletionMessageToolCall,
@@ -12,11 +11,12 @@ import type {
   ChatCompletionUserMessageParam,
 } from 'openai/resources/chat/completions'
 
-export type PromptRole = 'developer' | 'system'
-export type PromptMessage =
-  | ChatCompletionDeveloperMessageParam
-  | ChatCompletionSystemMessageParam
-export type AgentMessage = Exclude<ChatCompletionMessageParam, { role: 'function' }>
+export type PromptRole = 'system'
+export type PromptMessage = ChatCompletionSystemMessageParam
+export type AgentMessage = Exclude<
+  ChatCompletionMessageParam,
+  { role: 'function' }
+>
 
 export interface MemoryState {
   value: string
@@ -37,7 +37,10 @@ interface CompactMessagesOptions {
   tools: ChatCompletionTool[]
   maxContextMessages: number
   summaryTriggerTokens: number
-  summarize: (messages: AgentMessage[], existingMemory: string) => Promise<string>
+  summarize: (
+    messages: AgentMessage[],
+    existingMemory: string,
+  ) => Promise<string>
 }
 
 const CJK_CHAR_PATTERN =
@@ -114,7 +117,9 @@ export async function readPromptFromCli(
   }
 }
 
-export function parseObjectArguments(rawArguments: string): Record<string, unknown> {
+export function parseObjectArguments(
+  rawArguments: string,
+): Record<string, unknown> {
   const parsed = rawArguments ? (JSON.parse(rawArguments) as unknown) : {}
   if (!isRecord(parsed)) {
     throw new Error('tool arguments 必须是 JSON 对象')
@@ -124,11 +129,7 @@ export function parseObjectArguments(rawArguments: string): Record<string, unkno
 }
 
 export function normalizeMessageContent(
-  content:
-    | string
-    | Array<{ text?: string; type?: string }>
-    | null
-    | undefined,
+  content: string | Array<{ text?: string; type?: string }> | null | undefined,
 ): string {
   if (typeof content === 'string') {
     return content
@@ -139,7 +140,9 @@ export function normalizeMessageContent(
   }
 
   return content
-    .map((part) => (typeof part.text === 'string' ? part.text : JSON.stringify(part)))
+    .map((part) =>
+      typeof part.text === 'string' ? part.text : JSON.stringify(part),
+    )
     .join('\n')
 }
 
@@ -181,21 +184,19 @@ export function clipText(text: string, maxTokens: number): string {
   return `${best}${suffix}`
 }
 
-export function createPromptMessage(role: PromptRole, content: string): PromptMessage {
-  if (role === 'developer') {
-    return {
-      role: 'developer',
-      content,
-    }
-  }
-
+export function createPromptMessage(
+  role: PromptRole,
+  content: string,
+): PromptMessage {
   return {
     role: 'system',
     content,
   }
 }
 
-export function createUserMessage(content: string): ChatCompletionUserMessageParam {
+export function createUserMessage(
+  content: string,
+): ChatCompletionUserMessageParam {
   return {
     role: 'user',
     content,
@@ -237,7 +238,7 @@ export function getFunctionToolCalls(
 }
 
 function isPromptMessage(message: AgentMessage): message is PromptMessage {
-  return message.role === 'developer' || message.role === 'system'
+  return message.role === 'system'
 }
 
 function messageToMemoryLine(message: AgentMessage): string {
@@ -318,7 +319,7 @@ export function buildMessagesForModel(
 
   const firstMessage = baseMessages[0]
   if (!firstMessage || !isPromptMessage(firstMessage)) {
-    throw new Error('对话的第一条消息必须是 developer 或 system 提示词')
+    throw new Error('对话的第一条消息必须是 system 提示词')
   }
 
   return [
@@ -337,8 +338,9 @@ function estimateContextTokens(
   tools: ChatCompletionTool[],
 ): number {
   return (
-    estimateTokensFromText(JSON.stringify(buildMessagesForModel(messages, memory))) +
-    estimateTokensFromText(JSON.stringify(tools))
+    estimateTokensFromText(
+      JSON.stringify(buildMessagesForModel(messages, memory)),
+    ) + estimateTokensFromText(JSON.stringify(tools))
   )
 }
 
@@ -358,7 +360,10 @@ export async function summarizeMemory(
     buildFallbackMemory(existingMemory, messages),
     maxMemoryTokens,
   )
-  const historyText = messages.map(formatMessageForSummary).filter(Boolean).join('\n\n')
+  const historyText = messages
+    .map(formatMessageForSummary)
+    .filter(Boolean)
+    .join('\n\n')
 
   try {
     const response = await client.chat.completions.create({
@@ -395,7 +400,9 @@ export async function compactMessages(
     summarize,
   } = options
 
-  if (estimateContextTokens(messages, memory.value, tools) < summaryTriggerTokens) {
+  if (
+    estimateContextTokens(messages, memory.value, tools) < summaryTriggerTokens
+  ) {
     return
   }
 

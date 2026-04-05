@@ -14,6 +14,8 @@ import {
   type Tool as McpTool,
 } from '@modelcontextprotocol/sdk/types.js'
 import type {
+  ChatCompletion,
+  ChatCompletionCreateParamsNonStreaming,
   ChatCompletionFunctionTool,
   ChatCompletionTool,
 } from 'openai/resources/chat/completions'
@@ -89,7 +91,7 @@ type ChromeConnectionMode =
   | 'auto-connect'
 
 const SYSTEM_PROMPT =
-  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。默认优先复用当前浏览器会话与登录态，不要主动创建隔离上下文；仅在用户明确要求时才使用隔离方式。若用户指定了账号（如“使用某个 Google 账号”），先在目标站点检查当前登录账号是否匹配，再继续执行任务；若不匹配，先明确告知并给出下一步操作建议。需要时调用工具，最后用中文给出简洁答案。今天是2026年4月5日。'
+  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。默认优先复用当前浏览器会话与登录态，不要主动创建隔离上下文；仅在用户明确要求时才使用隔离方式。若用户指定了账号（如“使用某个 Google 账号”），先在目标站点检查当前登录账号是否匹配，再继续执行任务；若不匹配，先明确告知并给出下一步操作建议。严格只调用工具列表中存在的工具名；元素 uid 仅使用形如 "1_40" 的值，不要传 "uid=1_40"。在网页任务中优先少量高价值调用，避免反复滚动或重复快照。需要时调用工具，最后用中文给出简洁答案。今天是2026年4月5日。'
 
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
@@ -118,15 +120,15 @@ const LOCAL_MAX_STEPS = 100
 const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 12)
 const MAX_MEMORY_TOKENS = readNumericEnv(
   'MAX_MEMORY_TOKENS',
-  Math.ceil(readNumericEnv('MAX_MEMORY_CHARS', 4000) / 3),
+  Math.ceil(readNumericEnv('MAX_MEMORY_CHARS', 3000) / 3),
 )
 const MAX_TOOL_RESULT_TOKENS = readNumericEnv(
   'MAX_TOOL_RESULT_TOKENS',
-  Math.ceil(readNumericEnv('MAX_TOOL_RESULT_CHARS', 4000) / 3),
+  Math.ceil(readNumericEnv('MAX_TOOL_RESULT_CHARS', 1500) / 3),
 )
 const SUMMARY_TRIGGER_TOKENS = readNumericEnv(
   'SUMMARY_TRIGGER_TOKENS',
-  Math.ceil(readNumericEnv('SUMMARY_TRIGGER_CHARS', 12000) / 3),
+  readNumericEnv('SUMMARY_TRIGGER_CHARS', 30000),
 )
 
 const client = new OpenAI({
@@ -299,7 +301,9 @@ async function executeLocalTool(
       )
       break
     default:
-      throw new Error(`未知工具: ${toolName}`)
+      throw new Error(
+        `未知工具: ${toolName}。可用本地工具: list_files, read_file`,
+      )
   }
 
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
@@ -597,6 +601,40 @@ function collectFunctionToolNames(toolList: ChatCompletionTool[]): Set<string> {
   return names
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function isRateLimitError(error: unknown): boolean {
+  const message = toErrorMessage(error).toLowerCase()
+  return message.includes('429') || message.includes('rate limit') || message.includes('rpm')
+}
+
+async function createChatCompletionWithRetry(
+  payload: ChatCompletionCreateParamsNonStreaming,
+): Promise<ChatCompletion> {
+  const retryDelays = [1200, 2500]
+  let lastError: unknown
+
+  for (let attempt = 0; attempt <= retryDelays.length; attempt += 1) {
+    try {
+      return await client.chat.completions.create(payload)
+    } catch (error) {
+      lastError = error
+      if (!isRateLimitError(error) || attempt >= retryDelays.length) {
+        break
+      }
+
+      const waitMs =
+        retryDelays[Math.min(attempt, retryDelays.length - 1)] || 1000
+      console.error(`[model] rate limited, retrying in ${waitMs}ms...`)
+      await sleep(waitMs)
+    }
+  }
+
+  throw lastError
+}
+
 async function createToolProvider(userPrompt: string): Promise<ToolProvider> {
   const serverConfig = await loadChromeMcpServerConfig(userPrompt)
   const transport = new StdioClientTransport({
@@ -667,7 +705,9 @@ async function createToolProvider(userPrompt: string): Promise<ToolProvider> {
           return formatMcpToolResult(result)
         }
 
-        throw new Error(`未知工具: ${toolName}`)
+        throw new Error(
+          `未知工具: ${toolName}。可用工具: ${[...localToolNames, ...chromeToolNames].join(', ')}`,
+        )
       },
       close: async () => {
         await transport.close()
@@ -709,16 +749,18 @@ async function runAgent(
           }),
       })
 
-      const response = await client.chat.completions.create({
+      const response = await createChatCompletionWithRetry({
         model: MODEL,
         parallel_tool_calls: false,
         tools: provider.tools,
         messages: buildMessagesForModel(messages, memory.value),
       })
 
-      const message = response.choices[0]?.message
+      const message = response.choices?.[0]?.message
       if (!message) {
-        throw new Error('模型没有返回消息')
+        throw new Error(
+          `模型没有返回消息: ${clipText(JSON.stringify(response), 400)}`,
+        )
       }
 
       const toolCalls = getFunctionToolCalls(message.tool_calls)
