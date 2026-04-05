@@ -361,7 +361,7 @@ function readChromeConnectionMode(): ChromeConnectionMode {
     return 'ws-endpoint'
   }
 
-  if (readBooleanEnv('CHROME_MCP_AUTO_CONNECT', false)) {
+  if (readBooleanEnv('CHROME_MCP_AUTO_CONNECT', true)) {
     return 'auto-connect'
   }
 

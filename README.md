@@ -106,7 +106,7 @@ MAX_CONTEXT_MESSAGES=20 MAX_MEMORY_TOKENS=1500 SUMMARY_TRIGGER_TOKENS=6000 npm s
 
 如果你本机装了 MCP server，也可以把它接进同样的 agent loop。
 
-[agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/agent.ts) 默认内置 Chrome DevTools MCP 工具，它做的事情是：
+[agent.ts](./agent.ts) 默认内置 Chrome DevTools MCP 工具，它做的事情是：
 
 1. 直接启动项目依赖里的 `chrome-devtools-mcp` 本地 server。
 2. 用 `@modelcontextprotocol/sdk` 通过 stdio 连接 MCP server。
@@ -139,7 +139,9 @@ npm start -- "打开 https://example.com ，读取页面标题，然后告诉我
 
 ### Chrome MCP 配置
 
-默认不会写死 `headless/isolated` 参数，行为由环境变量和用户输入共同决定：
+默认优先使用 `autoConnect` 连接你已经打开的 Chrome（可复用登录态）。如果你显式设置了 `CHROME_MCP_BROWSER_URL` / `CHROME_MCP_WS_ENDPOINT`，则优先按这两个配置连接。
+
+在 `launch` 模式下（例如设置 `CHROME_MCP_AUTO_CONNECT=false`），不会写死 `headless/isolated` 参数，行为由环境变量和用户输入共同决定：
 
 - 环境变量优先：`CHROME_MCP_HEADLESS` / `CHROME_MCP_ISOLATED`
 - 若未设置环境变量，会先让模型根据用户输入判定 `headless/isolated`
@@ -175,6 +177,8 @@ CHROME_MCP_BROWSER_URL=http://127.0.0.1:9222 npm start
 ### 注意
 
 - `chrome-devtools-mcp` 已经作为项目依赖安装在 [package.json]
+- 默认连接模式是 `autoConnect`，用于尽量复用你本机 Chrome 登录态
+- 若要让 `autoConnect` 生效，请先在 Chrome 打开 `chrome://inspect/#remote-debugging` 并允许远程调试
 - 这个示例不再把 `headless/isolated` 写死在代码中
 - tool 是否调用、以及调用时参数由模型基于用户输入自动决定；浏览器启动参数可由 env 覆盖
 - Chrome MCP 模式要求 Node.js `20.19.0+` 或 `22.12.0+`
