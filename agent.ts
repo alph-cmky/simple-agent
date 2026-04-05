@@ -1,7 +1,19 @@
 import 'dotenv/config'
 import fs from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 import OpenAI from 'openai'
+import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
+import {
+  StdioClientTransport,
+  type StdioServerParameters,
+} from '@modelcontextprotocol/sdk/client/stdio.js'
+import {
+  CallToolResultSchema,
+  type CallToolResult,
+  type CompatibilityCallToolResult,
+  type Tool as McpTool,
+} from '@modelcontextprotocol/sdk/types.js'
 import type {
   ChatCompletionFunctionTool,
   ChatCompletionTool,
@@ -15,6 +27,8 @@ import {
   createToolMessage,
   createUserMessage,
   getFunctionToolCalls,
+  inheritProcessEnv,
+  normalizeMessageContent,
   parseObjectArguments,
   readPromptFromCli,
   readNumericEnv,
@@ -22,7 +36,10 @@ import {
   toErrorMessage,
   type AgentMessage,
   type MemoryState,
+  type PromptRole,
 } from './agent-shared.js'
+
+type ToolMode = 'local' | 'chrome'
 
 type ListFilesArgs = {
   dir?: string
@@ -45,6 +62,32 @@ interface FileEntry {
   type: 'dir' | 'file'
 }
 
+interface ToolProvider {
+  mode: ToolMode
+  tools: ChatCompletionTool[]
+  instructionRole: PromptRole
+  systemPrompt: string
+  maxSteps: number
+  toolLogLabel: string
+  resultLogLabel: string
+  previewLimit: number
+  executeTool: (toolName: string, rawArguments: string) => Promise<string>
+  close: () => Promise<void>
+}
+
+interface CliOptions {
+  mode: ToolMode
+  promptArgs: string[]
+}
+
+type JsonSchemaObject = {
+  $schema?: string
+  type: 'object'
+  properties?: Record<string, object>
+  required?: string[]
+  [key: string]: unknown
+}
+
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
     return value
@@ -65,7 +108,9 @@ const MODEL = requireSetting(
 )
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? MODEL
 const ROOT_DIR = process.cwd()
-const MAX_STEPS = 100
+const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml')
+const LOCAL_MAX_STEPS = 100
+const CHROME_MAX_STEPS = 10
 const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 12)
 const MAX_MEMORY_TOKENS = readNumericEnv(
   'MAX_MEMORY_TOKENS',
@@ -189,7 +234,26 @@ const tools: ChatCompletionTool[] = [
   readFileTool.definition,
 ]
 
-async function executeTool(
+function parseCliOptions(argv: string[]): CliOptions {
+  let mode: ToolMode = 'local'
+  const promptArgs: string[] = []
+
+  for (const arg of argv) {
+    if (arg === '--chrome') {
+      mode = 'chrome'
+      continue
+    }
+
+    promptArgs.push(arg)
+  }
+
+  return {
+    mode,
+    promptArgs,
+  }
+}
+
+async function executeLocalTool(
   toolName: string,
   rawArguments: string,
 ): Promise<string> {
@@ -214,95 +278,344 @@ async function executeTool(
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
 }
 
-async function runAgent(userPrompt: string): Promise<void> {
+function createLocalToolProvider(): ToolProvider {
+  return {
+    mode: 'local',
+    tools,
+    instructionRole: 'system',
+    systemPrompt:
+      '你是一个教学演示用 agent。需要时调用工具，最后用中文给出简洁答案。',
+    maxSteps: LOCAL_MAX_STEPS,
+    toolLogLabel: 'tool',
+    resultLogLabel: 'tool result',
+    previewLimit: 400,
+    executeTool: executeLocalTool,
+    close: async () => {},
+  }
+}
+
+function readSection(text: string, header: string): string {
+  const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const sectionPattern = new RegExp(
+    `\\[${escapedHeader}\\]\\n([\\s\\S]*?)(?=\\n\\[[^\\]]+\\]|$)`,
+  )
+  const match = text.match(sectionPattern)
+  return match?.[1] ?? ''
+}
+
+function parseTomlString(section: string, key: string): string | null {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = section.match(new RegExp(`^${escapedKey}\\s*=\\s*"(.*)"$`, 'm'))
+  if (!match) {
+    return null
+  }
+
+  const value = match[1]
+  return value ? value.replace(/\\"/g, '"').replace(/\\\\/g, '\\') : null
+}
+
+function parseTomlStringArray(section: string, key: string): string[] {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = section.match(new RegExp(`^${escapedKey}\\s*=\\s*\\[(.*?)\\]$`, 'ms'))
+  if (!match) {
+    return []
+  }
+
+  const rawArray = match[1]
+  if (!rawArray) {
+    return []
+  }
+
+  return Array.from(rawArray.matchAll(/"((?:\\.|[^"])*)"/g), (item) => {
+    const value = item[1] ?? ''
+    return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
+  })
+}
+
+async function loadChromeMcpServerConfig(): Promise<StdioServerParameters> {
+  const toml = await fs.readFile(CODEX_CONFIG_PATH, 'utf8')
+  const serverSection = readSection(toml, 'mcp_servers.chrome-devtools')
+  const envSection = readSection(toml, 'mcp_servers.chrome-devtools.env')
+
+  const command = parseTomlString(serverSection, 'command')
+  const args = parseTomlStringArray(serverSection, 'args')
+
+  if (!command || args.length === 0) {
+    throw new Error('在 ~/.codex/config.toml 里没有找到 chrome-devtools MCP 配置')
+  }
+
+  const config: StdioServerParameters = {
+    command,
+    args: [...args],
+    env: inheritProcessEnv(),
+  }
+
+  const pathFromConfig = parseTomlString(envSection, 'PATH')
+  if (pathFromConfig && config.env) {
+    config.env.PATH = pathFromConfig
+  }
+
+  const demoFlags = ['--slim', '--headless', '--isolated']
+  for (const flag of demoFlags) {
+    if (!config.args?.includes(flag)) {
+      config.args?.push(flag)
+    }
+  }
+
+  return config
+}
+
+function sanitizeSchema(schema: unknown): JsonSchemaObject {
+  if (!schema || typeof schema !== 'object') {
+    return {
+      type: 'object',
+      properties: {},
+    }
+  }
+
+  return JSON.parse(JSON.stringify(schema)) as JsonSchemaObject
+}
+
+function mcpToolsToOpenAITools(mcpTools: McpTool[]): ChatCompletionTool[] {
+  return mcpTools.map(
+    (tool): ChatCompletionFunctionTool => ({
+      type: 'function',
+      function: {
+        name: tool.name,
+        description: tool.description || tool.title || `MCP tool: ${tool.name}`,
+        parameters: sanitizeSchema(tool.inputSchema),
+      },
+    }),
+  )
+}
+
+function formatMcpContentItem(item: CallToolResult['content'][number]): string {
+  if (item.type === 'text') {
+    return item.text
+  }
+
+  if (item.type === 'image') {
+    return `[image ${item.mimeType}, base64 length=${item.data.length}]`
+  }
+
+  if (item.type === 'audio') {
+    return `[audio ${item.mimeType}, base64 length=${item.data.length}]`
+  }
+
+  if (item.type === 'resource') {
+    const { resource } = item
+    if ('text' in resource) {
+      return `[resource ${resource.uri}]\n${resource.text}`
+    }
+
+    return `[resource ${resource.uri}, blob length=${resource.blob.length}]`
+  }
+
+  return JSON.stringify(item, null, 2)
+}
+
+function hasContentBlocks(result: CompatibilityCallToolResult): result is CallToolResult {
+  return Array.isArray((result as { content?: unknown }).content)
+}
+
+function formatMcpToolResult(result: CompatibilityCallToolResult): string {
+  if (!hasContentBlocks(result)) {
+    return JSON.stringify(
+      {
+        isError: false,
+        structuredContent: null,
+        content: [],
+        toolResult: result.toolResult ?? null,
+      },
+      null,
+      2,
+    )
+  }
+
+  const payload = {
+    isError: Boolean(result.isError),
+    structuredContent: result.structuredContent || null,
+    content: result.content.map(formatMcpContentItem),
+  }
+
+  return JSON.stringify(payload, null, 2)
+}
+
+async function createChromeToolProvider(): Promise<ToolProvider> {
+  const serverConfig = await loadChromeMcpServerConfig()
+  const transport = new StdioClientTransport({
+    ...serverConfig,
+    stderr: 'pipe',
+  })
+
+  if (transport.stderr) {
+    transport.stderr.on('data', (chunk) => {
+      const text = String(chunk).trim()
+      if (text) {
+        console.error(`[mcp stderr] ${text}`)
+      }
+    })
+  }
+
+  const mcpClient = new McpClient({
+    name: 'simple-agent',
+    version: '1.0.0',
+  })
+
+  mcpClient.onerror = (error) => {
+    console.error('[mcp client error]', error)
+  }
+
+  try {
+    await mcpClient.connect(transport)
+    const toolResult = await mcpClient.listTools()
+    const chromeTools = mcpToolsToOpenAITools(toolResult.tools)
+
+    console.log('[mcp tools]')
+    console.log(
+      chromeTools
+        .map((tool) => (tool.type === 'function' ? tool.function.name : tool.type))
+        .join(', '),
+    )
+
+    return {
+      mode: 'chrome',
+      tools: chromeTools,
+      instructionRole: 'developer',
+      systemPrompt:
+        '你是一个教学演示用 agent。你当前可以调用 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
+      maxSteps: CHROME_MAX_STEPS,
+      toolLogLabel: 'mcp tool',
+      resultLogLabel: 'mcp result',
+      previewLimit: 500,
+      executeTool: async (toolName, rawArguments) => {
+        const result = await mcpClient.callTool(
+          {
+            name: toolName,
+            arguments: parseObjectArguments(rawArguments),
+          },
+          CallToolResultSchema,
+        )
+
+        return formatMcpToolResult(result)
+      },
+      close: async () => {
+        await transport.close()
+      },
+    }
+  } catch (error) {
+    await transport.close().catch(() => {})
+    throw error
+  }
+}
+
+async function createToolProvider(mode: ToolMode): Promise<ToolProvider> {
+  if (mode === 'chrome') {
+    return createChromeToolProvider()
+  }
+
+  return createLocalToolProvider()
+}
+
+async function runAgent(userPrompt: string, provider: ToolProvider): Promise<void> {
   const memory: MemoryState = { value: '' }
   const messages: AgentMessage[] = [
     createPromptMessage(
-      'system',
-      '你是一个教学演示用 agent。需要时调用工具，最后用中文给出简洁答案。',
+      provider.instructionRole,
+      provider.systemPrompt,
     ),
     createUserMessage(userPrompt),
   ]
 
-  for (let step = 1; step <= MAX_STEPS; step += 1) {
-    console.log(`\n[loop ${step}] calling model...`)
-    await compactMessages({
-      messages,
-      memory,
-      tools,
-      maxContextMessages: MAX_CONTEXT_MESSAGES,
-      summaryTriggerTokens: SUMMARY_TRIGGER_TOKENS,
-      summarize: (archivedMessages, existingMemory) =>
-        summarizeMemory({
-          client,
-          summaryModel: SUMMARY_MODEL,
-          messages: archivedMessages,
-          existingMemory,
-          maxMemoryTokens: MAX_MEMORY_TOKENS,
-          instructionRole: 'system',
-        }),
-    })
+  try {
+    for (let step = 1; step <= provider.maxSteps; step += 1) {
+      console.log(`\n[loop ${step}] calling model...`)
+      await compactMessages({
+        messages,
+        memory,
+        tools: provider.tools,
+        maxContextMessages: MAX_CONTEXT_MESSAGES,
+        summaryTriggerTokens: SUMMARY_TRIGGER_TOKENS,
+        summarize: (archivedMessages, existingMemory) =>
+          summarizeMemory({
+            client,
+            summaryModel: SUMMARY_MODEL,
+            messages: archivedMessages,
+            existingMemory,
+            maxMemoryTokens: MAX_MEMORY_TOKENS,
+            instructionRole: provider.instructionRole,
+          }),
+      })
 
-    const response = await client.chat.completions.create({
-      model: MODEL,
-      parallel_tool_calls: false,
-      tools,
-      messages: buildMessagesForModel(messages, memory.value),
-    })
+      const response = await client.chat.completions.create({
+        model: MODEL,
+        parallel_tool_calls: false,
+        tools: provider.tools,
+        messages: buildMessagesForModel(messages, memory.value),
+      })
 
-    const message = response.choices[0]?.message
-    if (!message) {
-      throw new Error('模型没有返回消息')
-    }
-
-    const toolCalls = getFunctionToolCalls(message.tool_calls)
-    const assistantContent =
-      typeof message.content === 'string'
-        ? message.content
-        : message.refusal || ''
-
-    if (toolCalls.length === 0) {
-      console.log('\n[final answer]')
-      console.log(assistantContent)
-      return
-    }
-
-    messages.push(createAssistantToolCallMessage(assistantContent, toolCalls))
-
-    for (const toolCall of toolCalls) {
-      console.log(
-        `\n[tool] ${toolCall.function.name}(${toolCall.function.arguments})`,
-      )
-
-      let output: string
-      try {
-        output = await executeTool(
-          toolCall.function.name,
-          toolCall.function.arguments,
-        )
-      } catch (error) {
-        output = `Tool error: ${toErrorMessage(error)}`
+      const message = response.choices[0]?.message
+      if (!message) {
+        throw new Error('模型没有返回消息')
       }
 
-      const preview =
-        output.length > 400 ? `${output.slice(0, 400)}\n...<truncated>` : output
+      const toolCalls = getFunctionToolCalls(message.tool_calls)
+      const assistantContent =
+        normalizeMessageContent(message.content) || message.refusal || ''
 
-      console.log(`[tool result]\n${preview}`)
-      messages.push(
-        createToolMessage(
-          toolCall.id,
-          clipText(output, MAX_TOOL_RESULT_TOKENS),
-        ),
-      )
+      if (toolCalls.length === 0) {
+        console.log('\n[final answer]')
+        console.log(assistantContent)
+        return
+      }
+
+      messages.push(createAssistantToolCallMessage(assistantContent, toolCalls))
+
+      for (const toolCall of toolCalls) {
+        console.log(
+          `\n[${provider.toolLogLabel}] ${toolCall.function.name}(${toolCall.function.arguments})`,
+        )
+
+        let output: string
+        try {
+          output = await provider.executeTool(
+            toolCall.function.name,
+            toolCall.function.arguments,
+          )
+        } catch (error) {
+          output = `Tool error: ${toErrorMessage(error)}`
+        }
+
+        const preview =
+          output.length > provider.previewLimit
+            ? `${output.slice(0, provider.previewLimit)}\n...<truncated>`
+            : output
+
+        console.log(`[${provider.resultLogLabel}]\n${preview}`)
+        messages.push(
+          createToolMessage(
+            toolCall.id,
+            clipText(output, MAX_TOOL_RESULT_TOKENS),
+          ),
+        )
+      }
     }
+  } finally {
+    await provider.close()
   }
 
-  throw new Error(`超过最大循环次数: ${MAX_STEPS}`)
+  throw new Error(`超过最大循环次数: ${provider.maxSteps}`)
 }
 
 async function main(): Promise<void> {
-  const prompt = await readPromptFromCli('请输入 prompt: ')
-  await runAgent(prompt)
+  const cliOptions = parseCliOptions(process.argv.slice(2))
+  const question =
+    cliOptions.mode === 'chrome'
+      ? '请输入 Chrome MCP prompt: '
+      : '请输入 prompt: '
+  const prompt = await readPromptFromCli(question, cliOptions.promptArgs)
+  const provider = await createToolProvider(cliOptions.mode)
+  await runAgent(prompt, provider)
 }
 
 main().catch((error: unknown) => {

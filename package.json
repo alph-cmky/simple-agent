@@ -5,10 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "tsx agent.ts",
-    "start:chrome": "tsx chrome-mcp-agent.ts",
     "build": "tsc -p tsconfig.json",
-    "check": "tsc --noEmit",
-    "check:chrome": "tsc --noEmit"
+    "check": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

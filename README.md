@@ -54,10 +54,18 @@ npm start
 echo "请列出当前目录文件，再读取 package.json" | npm start
 ```
 
+如果要启用 Chrome DevTools MCP 模式，使用同一个入口加 `--chrome`：
+
+```bash
+npm start -- --chrome "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
+```
+
+如果不带 prompt，`npm start -- --chrome` 也会在终端里提示你输入。
+
 ## 代码里最关键的部分
 
 - `tools`：告诉模型“你有哪些本地能力可用”。
-- `toolDefinitions / executeTool`：把 tool 名字映射到本地 TS 函数。
+- `createToolProvider / executeTool`：把 tool 名字映射到本地函数或 Chrome MCP。
 - `message.tool_calls`：拿到模型返回的内容，判断有没有要调用的 tool。
 - `role: "tool"`：把本地 tool 执行结果作为 tool message 喂回模型，进入下一轮。
 
@@ -103,11 +111,7 @@ MAX_CONTEXT_MESSAGES=20 MAX_MEMORY_TOKENS=1500 SUMMARY_TRIGGER_TOKENS=6000 npm s
 
 如果你本机装了 MCP server，也可以把它接进同样的 agent loop。
 
-这个目录里额外提供了一个 Chrome DevTools MCP 示例：
-
-- [chrome-mcp-agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/chrome-mcp-agent.ts)
-
-它做的事情是：
+[agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/agent.ts) 内置了 Chrome DevTools MCP 模式，它做的事情是：
 
 1. 从 `~/.codex/config.toml` 读取 `chrome-devtools` 的本地配置。
 2. 用 `@modelcontextprotocol/sdk` 通过 stdio 连接 MCP server。
@@ -124,21 +128,21 @@ npm install
 ### 运行 Chrome MCP 版本
 
 ```bash
-npm run start:chrome
+npm start -- --chrome
 ```
 
 或者带一条 prompt：
 
 ```bash
-npm run start:chrome -- "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
+npm start -- --chrome "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
 ```
 
-如果不带参数，`npm run start:chrome` 也会在终端里提示你输入 prompt。
+如果不带参数，脚本会在终端里提示你输入 prompt。
 
-### 这个版本和前一个版本的区别
+### 工具模式
 
-- `agent.ts`：tool 是你自己在 TS 里手写的本地函数
-- `chrome-mcp-agent.ts`：tool 来自本机 MCP server
+- 默认模式：使用 `list_files` / `read_file` 这两个本地工具
+- `--chrome` 模式：tool 来自本机 Chrome DevTools MCP server
 
 本质上 loop 没变，变的是“tool 的执行端”。
 

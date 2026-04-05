@@ -76,8 +76,11 @@ export function toErrorMessage(error: unknown): string {
   return String(error)
 }
 
-export async function readPromptFromCli(question: string): Promise<string> {
-  const argPrompt = process.argv.slice(2).join(' ').trim()
+export async function readPromptFromCli(
+  question: string,
+  promptArgs: string[] = process.argv.slice(2),
+): Promise<string> {
+  const argPrompt = promptArgs.join(' ').trim()
   if (argPrompt) {
     return argPrompt
   }
