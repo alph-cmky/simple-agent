@@ -4,15 +4,21 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node agent.mjs",
-    "start:chrome": "node chrome-mcp-agent.mjs",
-    "check": "node --check agent.mjs",
-    "check:chrome": "node --check chrome-mcp-agent.mjs"
+    "start": "tsx agent.ts",
+    "start:chrome": "tsx chrome-mcp-agent.ts",
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc --noEmit",
+    "check:chrome": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
     "dotenv": "^16.6.1",
     "openai": "^6.33.0",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.5.2",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2"
   }
 }
