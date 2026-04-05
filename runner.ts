@@ -54,6 +54,7 @@ async function createChatCompletionWithRetry(
 ): Promise<ChatCompletion> {
   let lastError: unknown
 
+  // 仅在配额限流等短暂错误时重试，避免长流程里偶发 429 直接失败。
   for (
     let attempt = 0;
     attempt <= RATE_LIMIT_RETRY_DELAYS_MS.length;
@@ -96,6 +97,7 @@ function createRuntimeState(
 }
 
 function createSummarizer(provider: ToolProvider) {
+  // 先绑定 provider 的提示词角色，避免在压缩逻辑里重复拼装参数。
   return (archivedMessages: AgentMessage[], existingMemory: string) =>
     summarizeMemory({
       client,
@@ -141,6 +143,7 @@ async function callAssistant(
   const assistantContent =
     normalizeMessageContent(message.content) || message.refusal || ''
 
+  // 当前循环只支持 function tool calls，其他类型会在上游被拒绝。
   return { assistantContent, toolCalls }
 }
 

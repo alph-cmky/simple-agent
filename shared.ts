@@ -169,6 +169,7 @@ export function clipText(text: string, maxTokens: number): string {
   let right = text.length
   let best = ''
 
+  // 用二分截断可在超长文本下保持较高性能。
   while (left <= right) {
     const mid = Math.floor((left + right) / 2)
     const candidate = text.slice(0, mid)
@@ -322,6 +323,7 @@ export function buildMessagesForModel(
     throw new Error('对话的第一条消息必须是 system 提示词')
   }
 
+  // 以额外 system 消息注入 memory，保证原始顶层提示词不被覆盖。
   return [
     firstMessage,
     createPromptMessage(
@@ -410,6 +412,7 @@ export async function compactMessages(
     return
   }
 
+  // 永远保留首条 system 提示词和最近 N 条消息，只压缩中间历史段。
   const archived = messages.slice(1, messages.length - maxContextMessages)
   if (archived.length === 0) {
     return

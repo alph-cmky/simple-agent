@@ -107,6 +107,7 @@ async function assertChromeMcpInstalled(): Promise<void> {
 }
 
 function readChromeConnectionMode(): ChromeConnectionMode {
+  // 显式传入连接地址优先；否则默认走 auto-connect 复用用户现有浏览器会话。
   if (process.env.CHROME_MCP_BROWSER_URL) {
     return 'browser-url'
   }
@@ -180,9 +181,11 @@ async function buildChromeMcpArgs(userPrompt: string): Promise<string[]> {
     appendCliArg(args, '--wsEndpoint', process.env.CHROME_MCP_WS_ENDPOINT)
     appendCliArg(args, '--wsHeaders', process.env.CHROME_MCP_WS_HEADERS)
   } else if (connectionMode === 'auto-connect') {
+    // auto-connect 不启动新浏览器，优先附着到已打开的 Chrome。
     appendBooleanCliFlag(args, '--autoConnect', true)
     appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL || 'stable')
   } else {
+    // launch 模式下：环境变量优先于模型推断，推断只用于补齐未配置项。
     const headlessFlag =
       readOptionalBooleanEnv('CHROME_MCP_HEADLESS') ??
       promptOverrides.headless ??
@@ -296,6 +299,7 @@ function hasContentBlocks(
 }
 
 function formatMcpToolResult(result: CompatibilityCallToolResult): string {
+  // 把 MCP 各种返回结构统一成稳定 JSON，便于模型在上下文中消费。
   if (!hasContentBlocks(result)) {
     return JSON.stringify(
       {
