@@ -35,7 +35,7 @@ export const MODEL = requireSetting(
 export const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? MODEL
 
 export const LOCAL_MAX_STEPS = 100
-export const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 12)
+export const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 100)
 export const MAX_MEMORY_TOKENS = readNumericEnv(
   'MAX_MEMORY_TOKENS',
   tokensFromChars('MAX_MEMORY_CHARS', 3000),
