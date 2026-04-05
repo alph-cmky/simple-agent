@@ -54,20 +54,13 @@ npm start
 echo "请列出当前目录文件，再读取 package.json" | npm start
 ```
 
-如果要启用 Chrome DevTools MCP 模式，使用同一个入口加 `--chrome`：
-
-```bash
-npm start -- --chrome "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
-```
-
-如果不带 prompt，`npm start -- --chrome` 也会在终端里提示你输入。
-
-这个模式直接启动项目里安装的 `chrome-devtools-mcp`，不再依赖 `~/.codex/config.toml`。
+默认会同时加载本地文件工具和 Chrome DevTools MCP 工具。
+Chrome MCP server 会由项目自动启动，不再依赖 `~/.codex/config.toml`。
 
 ## 代码里最关键的部分
 
 - `tools`：告诉模型“你有哪些本地能力可用”。
-- `createToolProvider / executeTool`：把 tool 名字映射到本地函数或 Chrome MCP。
+- `createCombinedToolProvider / executeTool`：把 tool 名字映射到本地函数或 Chrome MCP。
 - `message.tool_calls`：拿到模型返回的内容，判断有没有要调用的 tool。
 - `role: "tool"`：把本地 tool 执行结果作为 tool message 喂回模型，进入下一轮。
 
@@ -109,11 +102,11 @@ MAX_CONTEXT_MESSAGES=20 MAX_MEMORY_TOKENS=1500 SUMMARY_TRIGGER_TOKENS=6000 npm s
 
 这两个 tool 足够看懂最基本的 agent loop 是怎么跑起来的。
 
-## 接本地 MCP 工具
+## Chrome MCP 工具
 
 如果你本机装了 MCP server，也可以把它接进同样的 agent loop。
 
-[agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/agent.ts) 内置了 Chrome DevTools MCP 模式，它做的事情是：
+[agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/agent.ts) 默认内置 Chrome DevTools MCP 工具，它做的事情是：
 
 1. 直接启动项目依赖里的 `chrome-devtools-mcp` 本地 server。
 2. 用 `@modelcontextprotocol/sdk` 通过 stdio 连接 MCP server。
@@ -127,26 +120,22 @@ MAX_CONTEXT_MESSAGES=20 MAX_MEMORY_TOKENS=1500 SUMMARY_TRIGGER_TOKENS=6000 npm s
 npm install
 ```
 
-### 运行 Chrome MCP 版本
+### 运行
 
 ```bash
-npm start -- --chrome
+npm start
 ```
 
 或者带一条 prompt：
 
 ```bash
-npm start -- --chrome "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
+npm start -- "打开 https://example.com ，读取页面标题，然后告诉我页面标题"
 ```
 
-如果不带参数，脚本会在终端里提示你输入 prompt。
+### 默认工具集
 
-### 工具模式
-
-- 默认模式：使用 `list_files` / `read_file` 这两个本地工具
-- `--chrome` 模式：tool 来自本机 Chrome DevTools MCP server
-
-本质上 loop 没变，变的是“tool 的执行端”。
+- 本地工具：`list_files` / `read_file`
+- 浏览器工具：来自本机 Chrome DevTools MCP server（自动启动）
 
 ### Chrome MCP 配置
 
@@ -180,12 +169,12 @@ npm start -- --chrome "打开 https://example.com ，读取页面标题，然后
 例如连接一个已开启远程调试的本地 Chrome：
 
 ```bash
-CHROME_MCP_BROWSER_URL=http://127.0.0.1:9222 npm start -- --chrome
+CHROME_MCP_BROWSER_URL=http://127.0.0.1:9222 npm start
 ```
 
 ### 注意
 
-- `chrome-devtools-mcp` 已经作为项目依赖安装在 [package.json](/Users/gaoyinrun/Desktop/qy/simple-agent/package.json#L11)
+- `chrome-devtools-mcp` 已经作为项目依赖安装在 [package.json]
 - 这个示例默认会给 `chrome-devtools-mcp` 追加 `--slim --headless --isolated`
 - 这样更适合学习：工具少、不会干扰你平时打开的 Chrome
 - Chrome MCP 模式要求 Node.js `20.19.0+` 或 `22.12.0+`

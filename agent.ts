@@ -38,7 +38,7 @@ import {
   type PromptRole,
 } from './agent-shared.js'
 
-type ToolMode = 'local' | 'chrome'
+type ToolMode = 'local' | 'chrome' | 'combined'
 
 type ListFilesArgs = {
   dir?: string
@@ -75,7 +75,6 @@ interface ToolProvider {
 }
 
 interface CliOptions {
-  mode: ToolMode
   promptArgs: string[]
 }
 
@@ -87,7 +86,11 @@ type JsonSchemaObject = {
   [key: string]: unknown
 }
 
-type ChromeConnectionMode = 'launch' | 'browser-url' | 'ws-endpoint' | 'auto-connect'
+type ChromeConnectionMode =
+  | 'launch'
+  | 'browser-url'
+  | 'ws-endpoint'
+  | 'auto-connect'
 
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
@@ -256,21 +259,8 @@ const tools: ChatCompletionTool[] = [
 ]
 
 function parseCliOptions(argv: string[]): CliOptions {
-  let mode: ToolMode = 'local'
-  const promptArgs: string[] = []
-
-  for (const arg of argv) {
-    if (arg === '--chrome') {
-      mode = 'chrome'
-      continue
-    }
-
-    promptArgs.push(arg)
-  }
-
   return {
-    mode,
-    promptArgs,
+    promptArgs: argv.filter((arg) => arg !== '--chrome'),
   }
 }
 
@@ -315,7 +305,11 @@ function createLocalToolProvider(): ToolProvider {
   }
 }
 
-function appendCliArg(args: string[], flag: string, value: string | undefined): void {
+function appendCliArg(
+  args: string[],
+  flag: string,
+  value: string | undefined,
+): void {
   if (!value) {
     return
   }
@@ -323,7 +317,11 @@ function appendCliArg(args: string[], flag: string, value: string | undefined): 
   args.push(flag, value)
 }
 
-function appendBooleanCliFlag(args: string[], flag: string, enabled: boolean): void {
+function appendBooleanCliFlag(
+  args: string[],
+  flag: string,
+  enabled: boolean,
+): void {
   if (enabled) {
     args.push(flag)
   }
@@ -335,13 +333,11 @@ function assertChromeMcpNodeVersion(): void {
   const minor = Number(minorRaw)
 
   const isSupported =
-    major > 22 ||
-    (major === 22 && minor >= 12) ||
-    (major === 20 && minor >= 19)
+    major > 22 || (major === 22 && minor >= 12) || (major === 20 && minor >= 19)
 
   if (!isSupported) {
     throw new Error(
-      `Chrome MCP 模式要求 Node.js 20.19.0+ 或 22.12.0+。当前是 ${process.version}。请先升级 Node 再运行 npm start -- --chrome。`,
+      `Chrome MCP 工具要求 Node.js 20.19.0+ 或 22.12.0+。当前是 ${process.version}。请先升级 Node 再运行 npm start。`,
     )
   }
 }
@@ -398,7 +394,11 @@ function buildChromeMcpArgs(): string[] {
       readBooleanEnv('CHROME_MCP_ISOLATED', true),
     )
     appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL)
-    appendCliArg(args, '--executablePath', process.env.CHROME_MCP_EXECUTABLE_PATH)
+    appendCliArg(
+      args,
+      '--executablePath',
+      process.env.CHROME_MCP_EXECUTABLE_PATH,
+    )
     appendCliArg(args, '--userDataDir', process.env.CHROME_MCP_USER_DATA_DIR)
   }
 
@@ -410,8 +410,7 @@ function buildChromeMcpArgs(): string[] {
     args.push('--acceptInsecureCerts')
   }
 
-  const chromeArgs = process.env.CHROME_MCP_CHROME_ARGS
-    ?.split(/\s*\n\s*/)
+  const chromeArgs = process.env.CHROME_MCP_CHROME_ARGS?.split(/\s*\n\s*/)
     .map((value) => value.trim())
     .filter(Boolean)
   if (chromeArgs) {
@@ -420,8 +419,9 @@ function buildChromeMcpArgs(): string[] {
     }
   }
 
-  const ignoreDefaultArgs = process.env.CHROME_MCP_IGNORE_DEFAULT_ARGS
-    ?.split(/\s*\n\s*/)
+  const ignoreDefaultArgs = process.env.CHROME_MCP_IGNORE_DEFAULT_ARGS?.split(
+    /\s*\n\s*/,
+  )
     .map((value) => value.trim())
     .filter(Boolean)
   if (ignoreDefaultArgs) {
@@ -502,7 +502,9 @@ function formatMcpContentItem(item: CallToolResult['content'][number]): string {
   return JSON.stringify(item, null, 2)
 }
 
-function hasContentBlocks(result: CompatibilityCallToolResult): result is CallToolResult {
+function hasContentBlocks(
+  result: CompatibilityCallToolResult,
+): result is CallToolResult {
   return Array.isArray((result as { content?: unknown }).content)
 }
 
@@ -562,16 +564,18 @@ async function createChromeToolProvider(): Promise<ToolProvider> {
     console.log('[mcp tools]')
     console.log(
       chromeTools
-        .map((tool) => (tool.type === 'function' ? tool.function.name : tool.type))
+        .map((tool) =>
+          tool.type === 'function' ? tool.function.name : tool.type,
+        )
         .join(', '),
     )
 
     return {
       mode: 'chrome',
       tools: chromeTools,
-      instructionRole: 'developer',
+      instructionRole: 'system',
       systemPrompt:
-        '你是一个教学演示用 agent。你当前可以调用 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
+        '你是一个通用型agent。你当前可以调用 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
       maxSteps: CHROME_MAX_STEPS,
       toolLogLabel: 'mcp tool',
       resultLogLabel: 'mcp result',
@@ -597,21 +601,70 @@ async function createChromeToolProvider(): Promise<ToolProvider> {
   }
 }
 
-async function createToolProvider(mode: ToolMode): Promise<ToolProvider> {
-  if (mode === 'chrome') {
-    return createChromeToolProvider()
+function collectFunctionToolNames(toolList: ChatCompletionTool[]): Set<string> {
+  const names = new Set<string>()
+
+  for (const tool of toolList) {
+    if (tool.type !== 'function') {
+      continue
+    }
+    names.add(tool.function.name)
   }
 
-  return createLocalToolProvider()
+  return names
 }
 
-async function runAgent(userPrompt: string, provider: ToolProvider): Promise<void> {
+async function createCombinedToolProvider(): Promise<ToolProvider> {
+  const localProvider = createLocalToolProvider()
+  const chromeProvider = await createChromeToolProvider()
+
+  const localToolNames = collectFunctionToolNames(localProvider.tools)
+  const chromeToolNames = collectFunctionToolNames(chromeProvider.tools)
+
+  for (const toolName of localToolNames) {
+    if (chromeToolNames.has(toolName)) {
+      throw new Error(`工具名冲突: ${toolName}`)
+    }
+  }
+
+  return {
+    mode: 'combined',
+    tools: [...localProvider.tools, ...chromeProvider.tools],
+    instructionRole: 'system',
+    systemPrompt:
+      '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
+    maxSteps: LOCAL_MAX_STEPS,
+    toolLogLabel: 'tool',
+    resultLogLabel: 'tool result',
+    previewLimit: 500,
+    executeTool: async (toolName, rawArguments) => {
+      if (localToolNames.has(toolName)) {
+        return localProvider.executeTool(toolName, rawArguments)
+      }
+      if (chromeToolNames.has(toolName)) {
+        return chromeProvider.executeTool(toolName, rawArguments)
+      }
+
+      throw new Error(`未知工具: ${toolName}`)
+    },
+    close: async () => {
+      await chromeProvider.close()
+      await localProvider.close()
+    },
+  }
+}
+
+async function createToolProvider(): Promise<ToolProvider> {
+  return createCombinedToolProvider()
+}
+
+async function runAgent(
+  userPrompt: string,
+  provider: ToolProvider,
+): Promise<void> {
   const memory: MemoryState = { value: '' }
   const messages: AgentMessage[] = [
-    createPromptMessage(
-      provider.instructionRole,
-      provider.systemPrompt,
-    ),
+    createPromptMessage(provider.instructionRole, provider.systemPrompt),
     createUserMessage(userPrompt),
   ]
 
@@ -697,12 +750,8 @@ async function runAgent(userPrompt: string, provider: ToolProvider): Promise<voi
 
 async function main(): Promise<void> {
   const cliOptions = parseCliOptions(process.argv.slice(2))
-  const question =
-    cliOptions.mode === 'chrome'
-      ? '请输入 Chrome MCP prompt: '
-      : '请输入 prompt: '
-  const prompt = await readPromptFromCli(question, cliOptions.promptArgs)
-  const provider = await createToolProvider(cliOptions.mode)
+  const prompt = await readPromptFromCli('请输入 prompt: ', cliOptions.promptArgs)
+  const provider = await createToolProvider()
   await runAgent(prompt, provider)
 }
 
