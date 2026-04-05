@@ -1,6 +1,5 @@
 import 'dotenv/config'
 import fs from 'node:fs/promises'
-import os from 'node:os'
 import path from 'node:path'
 import OpenAI from 'openai'
 import { Client as McpClient } from '@modelcontextprotocol/sdk/client/index.js'
@@ -88,6 +87,8 @@ type JsonSchemaObject = {
   [key: string]: unknown
 }
 
+type ChromeConnectionMode = 'launch' | 'browser-url' | 'ws-endpoint' | 'auto-connect'
+
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
     return value
@@ -108,7 +109,9 @@ const MODEL = requireSetting(
 )
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? MODEL
 const ROOT_DIR = process.cwd()
-const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml')
+const CHROME_MCP_BIN_PATH = resolveInsideRoot(
+  'node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js',
+)
 const LOCAL_MAX_STEPS = 100
 const CHROME_MAX_STEPS = 10
 const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 12)
@@ -129,6 +132,24 @@ const client = new OpenAI({
   apiKey: API_KEY,
   baseURL: BASE_URL,
 })
+
+function readBooleanEnv(name: string, fallback: boolean): boolean {
+  const rawValue = process.env[name]
+  if (!rawValue) {
+    return fallback
+  }
+
+  const normalized = rawValue.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false
+  }
+
+  return fallback
+}
 
 function resolveInsideRoot(target = '.'): string {
   const fullPath = path.resolve(ROOT_DIR, target)
@@ -294,75 +315,142 @@ function createLocalToolProvider(): ToolProvider {
   }
 }
 
-function readSection(text: string, header: string): string {
-  const escapedHeader = header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const sectionPattern = new RegExp(
-    `\\[${escapedHeader}\\]\\n([\\s\\S]*?)(?=\\n\\[[^\\]]+\\]|$)`,
-  )
-  const match = text.match(sectionPattern)
-  return match?.[1] ?? ''
+function appendCliArg(args: string[], flag: string, value: string | undefined): void {
+  if (!value) {
+    return
+  }
+
+  args.push(flag, value)
 }
 
-function parseTomlString(section: string, key: string): string | null {
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = section.match(new RegExp(`^${escapedKey}\\s*=\\s*"(.*)"$`, 'm'))
-  if (!match) {
-    return null
+function appendBooleanCliFlag(args: string[], flag: string, enabled: boolean): void {
+  if (enabled) {
+    args.push(flag)
   }
-
-  const value = match[1]
-  return value ? value.replace(/\\"/g, '"').replace(/\\\\/g, '\\') : null
 }
 
-function parseTomlStringArray(section: string, key: string): string[] {
-  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  const match = section.match(new RegExp(`^${escapedKey}\\s*=\\s*\\[(.*?)\\]$`, 'ms'))
-  if (!match) {
-    return []
-  }
+function assertChromeMcpNodeVersion(): void {
+  const [majorRaw, minorRaw] = process.versions.node.split('.')
+  const major = Number(majorRaw)
+  const minor = Number(minorRaw)
 
-  const rawArray = match[1]
-  if (!rawArray) {
-    return []
-  }
+  const isSupported =
+    major > 22 ||
+    (major === 22 && minor >= 12) ||
+    (major === 20 && minor >= 19)
 
-  return Array.from(rawArray.matchAll(/"((?:\\.|[^"])*)"/g), (item) => {
-    const value = item[1] ?? ''
-    return value.replace(/\\"/g, '"').replace(/\\\\/g, '\\')
-  })
+  if (!isSupported) {
+    throw new Error(
+      `Chrome MCP 模式要求 Node.js 20.19.0+ 或 22.12.0+。当前是 ${process.version}。请先升级 Node 再运行 npm start -- --chrome。`,
+    )
+  }
 }
 
-async function loadChromeMcpServerConfig(): Promise<StdioServerParameters> {
-  const toml = await fs.readFile(CODEX_CONFIG_PATH, 'utf8')
-  const serverSection = readSection(toml, 'mcp_servers.chrome-devtools')
-  const envSection = readSection(toml, 'mcp_servers.chrome-devtools.env')
+async function assertChromeMcpInstalled(): Promise<void> {
+  try {
+    await fs.access(CHROME_MCP_BIN_PATH)
+  } catch {
+    throw new Error(
+      '未找到项目内置的 chrome-devtools-mcp。请先在项目根目录执行 npm install。',
+    )
+  }
+}
 
-  const command = parseTomlString(serverSection, 'command')
-  const args = parseTomlStringArray(serverSection, 'args')
-
-  if (!command || args.length === 0) {
-    throw new Error('在 ~/.codex/config.toml 里没有找到 chrome-devtools MCP 配置')
+function readChromeConnectionMode(): ChromeConnectionMode {
+  if (process.env.CHROME_MCP_BROWSER_URL) {
+    return 'browser-url'
   }
 
-  const config: StdioServerParameters = {
-    command,
-    args: [...args],
-    env: inheritProcessEnv(),
+  if (process.env.CHROME_MCP_WS_ENDPOINT) {
+    return 'ws-endpoint'
   }
 
-  const pathFromConfig = parseTomlString(envSection, 'PATH')
-  if (pathFromConfig && config.env) {
-    config.env.PATH = pathFromConfig
+  if (readBooleanEnv('CHROME_MCP_AUTO_CONNECT', false)) {
+    return 'auto-connect'
   }
 
-  const demoFlags = ['--slim', '--headless', '--isolated']
-  for (const flag of demoFlags) {
-    if (!config.args?.includes(flag)) {
-      config.args?.push(flag)
+  return 'launch'
+}
+
+function buildChromeMcpArgs(): string[] {
+  const args = [CHROME_MCP_BIN_PATH]
+  const connectionMode = readChromeConnectionMode()
+
+  appendBooleanCliFlag(args, '--slim', readBooleanEnv('CHROME_MCP_SLIM', true))
+
+  if (connectionMode === 'browser-url') {
+    appendCliArg(args, '--browserUrl', process.env.CHROME_MCP_BROWSER_URL)
+  } else if (connectionMode === 'ws-endpoint') {
+    appendCliArg(args, '--wsEndpoint', process.env.CHROME_MCP_WS_ENDPOINT)
+    appendCliArg(args, '--wsHeaders', process.env.CHROME_MCP_WS_HEADERS)
+  } else if (connectionMode === 'auto-connect') {
+    appendBooleanCliFlag(args, '--autoConnect', true)
+    appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL || 'stable')
+  } else {
+    appendBooleanCliFlag(
+      args,
+      '--headless',
+      readBooleanEnv('CHROME_MCP_HEADLESS', true),
+    )
+    appendBooleanCliFlag(
+      args,
+      '--isolated',
+      readBooleanEnv('CHROME_MCP_ISOLATED', true),
+    )
+    appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL)
+    appendCliArg(args, '--executablePath', process.env.CHROME_MCP_EXECUTABLE_PATH)
+    appendCliArg(args, '--userDataDir', process.env.CHROME_MCP_USER_DATA_DIR)
+  }
+
+  appendCliArg(args, '--viewport', process.env.CHROME_MCP_VIEWPORT)
+  appendCliArg(args, '--logFile', process.env.CHROME_MCP_LOG_FILE)
+  appendCliArg(args, '--proxyServer', process.env.CHROME_MCP_PROXY_SERVER)
+
+  if (readBooleanEnv('CHROME_MCP_ACCEPT_INSECURE_CERTS', false)) {
+    args.push('--acceptInsecureCerts')
+  }
+
+  const chromeArgs = process.env.CHROME_MCP_CHROME_ARGS
+    ?.split(/\s*\n\s*/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  if (chromeArgs) {
+    for (const chromeArg of chromeArgs) {
+      args.push('--chromeArg', chromeArg)
     }
   }
 
-  return config
+  const ignoreDefaultArgs = process.env.CHROME_MCP_IGNORE_DEFAULT_ARGS
+    ?.split(/\s*\n\s*/)
+    .map((value) => value.trim())
+    .filter(Boolean)
+  if (ignoreDefaultArgs) {
+    for (const ignoredArg of ignoreDefaultArgs) {
+      args.push('--ignoreDefaultChromeArg', ignoredArg)
+    }
+  }
+
+  if (!readBooleanEnv('CHROME_MCP_USAGE_STATISTICS', true)) {
+    args.push('--no-usage-statistics')
+  }
+
+  if (!readBooleanEnv('CHROME_MCP_PERFORMANCE_CRUX', true)) {
+    args.push('--no-performance-crux')
+  }
+
+  return args
+}
+
+async function loadChromeMcpServerConfig(): Promise<StdioServerParameters> {
+  assertChromeMcpNodeVersion()
+  await assertChromeMcpInstalled()
+
+  return {
+    command: process.execPath,
+    args: buildChromeMcpArgs(),
+    env: inheritProcessEnv(),
+    cwd: ROOT_DIR,
+  }
 }
 
 function sanitizeSchema(schema: unknown): JsonSchemaObject {

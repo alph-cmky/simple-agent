@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "chrome-devtools-mcp": "^0.21.0",
     "dotenv": "^16.6.1",
     "openai": "^6.33.0",
     "zod": "^4.3.6"

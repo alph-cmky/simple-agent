@@ -62,6 +62,8 @@ npm start -- --chrome "打开 https://example.com ，读取页面标题，然后
 
 如果不带 prompt，`npm start -- --chrome` 也会在终端里提示你输入。
 
+这个模式直接启动项目里安装的 `chrome-devtools-mcp`，不再依赖 `~/.codex/config.toml`。
+
 ## 代码里最关键的部分
 
 - `tools`：告诉模型“你有哪些本地能力可用”。
@@ -113,7 +115,7 @@ MAX_CONTEXT_MESSAGES=20 MAX_MEMORY_TOKENS=1500 SUMMARY_TRIGGER_TOKENS=6000 npm s
 
 [agent.ts](/Users/gaoyinrun/Desktop/qy/simple-agent/agent.ts) 内置了 Chrome DevTools MCP 模式，它做的事情是：
 
-1. 从 `~/.codex/config.toml` 读取 `chrome-devtools` 的本地配置。
+1. 直接启动项目依赖里的 `chrome-devtools-mcp` 本地 server。
 2. 用 `@modelcontextprotocol/sdk` 通过 stdio 连接 MCP server。
 3. 调用 `listTools()` 取到 MCP tools。
 4. 把这些 MCP tools 转成 Chat Completions 可调用的 function tools。
@@ -146,12 +148,48 @@ npm start -- --chrome "打开 https://example.com ，读取页面标题，然后
 
 本质上 loop 没变，变的是“tool 的执行端”。
 
+### Chrome MCP 配置
+
+默认会追加这些参数：
+
+- `--slim`
+- `--headless`
+- `--isolated`
+
+可选环境变量：
+
+- `CHROME_MCP_HEADLESS`
+- `CHROME_MCP_ISOLATED`
+- `CHROME_MCP_CHANNEL`
+- `CHROME_MCP_BROWSER_URL`
+- `CHROME_MCP_WS_ENDPOINT`
+- `CHROME_MCP_WS_HEADERS`
+- `CHROME_MCP_EXECUTABLE_PATH`
+- `CHROME_MCP_USER_DATA_DIR`
+- `CHROME_MCP_VIEWPORT`
+- `CHROME_MCP_LOG_FILE`
+- `CHROME_MCP_PROXY_SERVER`
+- `CHROME_MCP_ACCEPT_INSECURE_CERTS`
+- `CHROME_MCP_CHROME_ARGS`
+- `CHROME_MCP_IGNORE_DEFAULT_ARGS`
+- `CHROME_MCP_AUTO_CONNECT`
+- `CHROME_MCP_SLIM`
+- `CHROME_MCP_USAGE_STATISTICS`
+- `CHROME_MCP_PERFORMANCE_CRUX`
+
+例如连接一个已开启远程调试的本地 Chrome：
+
+```bash
+CHROME_MCP_BROWSER_URL=http://127.0.0.1:9222 npm start -- --chrome
+```
+
 ### 注意
 
+- `chrome-devtools-mcp` 已经作为项目依赖安装在 [package.json](/Users/gaoyinrun/Desktop/qy/simple-agent/package.json#L11)
 - 这个示例默认会给 `chrome-devtools-mcp` 追加 `--slim --headless --isolated`
 - 这样更适合学习：工具少、不会干扰你平时打开的 Chrome
-- 如果你的 `~/.codex/config.toml` 里没有 `chrome-devtools` 配置，这个脚本会直接报错
-- 你的本机 Node / npm 版本最好至少是 `18.14.1`，否则部分 MCP 依赖可能只给 warning 或出现兼容性问题
+- Chrome MCP 模式要求 Node.js `20.19.0+` 或 `22.12.0+`
+- 仅把 MCP server 内置到了项目里，没有内置 Chrome 浏览器二进制；机器上仍然需要可用的 Chrome
 
 ## TypeScript 开发
 
