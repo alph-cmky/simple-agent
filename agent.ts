@@ -89,7 +89,7 @@ type ChromeConnectionMode =
   | 'auto-connect'
 
 const SYSTEM_PROMPT =
-  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。你默认使用用户的浏览器，需要时调用工具，最后用中文给出简洁答案。'
+  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。默认优先复用当前浏览器会话与登录态，不要主动创建隔离上下文；仅在用户明确要求时才使用隔离方式。若用户指定了账号（如“使用某个 Google 账号”），先在目标站点检查当前登录账号是否匹配，再继续执行任务；若不匹配，先明确告知并给出下一步操作建议。需要时调用工具，最后用中文给出简洁答案。'
 
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
