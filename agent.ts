@@ -38,8 +38,6 @@ import {
   type PromptRole,
 } from './agent-shared.js'
 
-type ToolMode = 'local' | 'chrome' | 'combined'
-
 type ListFilesArgs = {
   dir?: string
 }
@@ -62,10 +60,8 @@ interface FileEntry {
 }
 
 interface ToolProvider {
-  mode: ToolMode
   tools: ChatCompletionTool[]
   instructionRole: PromptRole
-  systemPrompt: string
   maxSteps: number
   toolLogLabel: string
   resultLogLabel: string
@@ -92,6 +88,9 @@ type ChromeConnectionMode =
   | 'ws-endpoint'
   | 'auto-connect'
 
+const SYSTEM_PROMPT =
+  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。'
+
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
     return value
@@ -116,7 +115,6 @@ const CHROME_MCP_BIN_PATH = resolveInsideRoot(
   'node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js',
 )
 const LOCAL_MAX_STEPS = 100
-const CHROME_MAX_STEPS = 10
 const MAX_CONTEXT_MESSAGES = readNumericEnv('MAX_CONTEXT_MESSAGES', 12)
 const MAX_MEMORY_TOKENS = readNumericEnv(
   'MAX_MEMORY_TOKENS',
@@ -287,22 +285,6 @@ async function executeLocalTool(
   }
 
   return typeof result === 'string' ? result : JSON.stringify(result, null, 2)
-}
-
-function createLocalToolProvider(): ToolProvider {
-  return {
-    mode: 'local',
-    tools,
-    instructionRole: 'system',
-    systemPrompt:
-      '你是一个教学演示用 agent。需要时调用工具，最后用中文给出简洁答案。',
-    maxSteps: LOCAL_MAX_STEPS,
-    toolLogLabel: 'tool',
-    resultLogLabel: 'tool result',
-    previewLimit: 400,
-    executeTool: executeLocalTool,
-    close: async () => {},
-  }
 }
 
 function appendCliArg(
@@ -531,7 +513,20 @@ function formatMcpToolResult(result: CompatibilityCallToolResult): string {
   return JSON.stringify(payload, null, 2)
 }
 
-async function createChromeToolProvider(): Promise<ToolProvider> {
+function collectFunctionToolNames(toolList: ChatCompletionTool[]): Set<string> {
+  const names = new Set<string>()
+
+  for (const tool of toolList) {
+    if (tool.type !== 'function') {
+      continue
+    }
+    names.add(tool.function.name)
+  }
+
+  return names
+}
+
+async function createToolProvider(): Promise<ToolProvider> {
   const serverConfig = await loadChromeMcpServerConfig()
   const transport = new StdioClientTransport({
     ...serverConfig,
@@ -570,26 +565,38 @@ async function createChromeToolProvider(): Promise<ToolProvider> {
         .join(', '),
     )
 
+    const localToolNames = collectFunctionToolNames(tools)
+    const chromeToolNames = collectFunctionToolNames(chromeTools)
+
+    for (const toolName of localToolNames) {
+      if (chromeToolNames.has(toolName)) {
+        throw new Error(`工具名冲突: ${toolName}`)
+      }
+    }
+
     return {
-      mode: 'chrome',
-      tools: chromeTools,
+      tools: [...tools, ...chromeTools],
       instructionRole: 'system',
-      systemPrompt:
-        '你是一个通用型agent。你当前可以调用 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
-      maxSteps: CHROME_MAX_STEPS,
-      toolLogLabel: 'mcp tool',
-      resultLogLabel: 'mcp result',
+      maxSteps: LOCAL_MAX_STEPS,
+      toolLogLabel: 'tool',
+      resultLogLabel: 'tool result',
       previewLimit: 500,
       executeTool: async (toolName, rawArguments) => {
-        const result = await mcpClient.callTool(
-          {
-            name: toolName,
-            arguments: parseObjectArguments(rawArguments),
-          },
-          CallToolResultSchema,
-        )
+        if (localToolNames.has(toolName)) {
+          return executeLocalTool(toolName, rawArguments)
+        }
+        if (chromeToolNames.has(toolName)) {
+          const result = await mcpClient.callTool(
+            {
+              name: toolName,
+              arguments: parseObjectArguments(rawArguments),
+            },
+            CallToolResultSchema,
+          )
+          return formatMcpToolResult(result)
+        }
 
-        return formatMcpToolResult(result)
+        throw new Error(`未知工具: ${toolName}`)
       },
       close: async () => {
         await transport.close()
@@ -601,70 +608,13 @@ async function createChromeToolProvider(): Promise<ToolProvider> {
   }
 }
 
-function collectFunctionToolNames(toolList: ChatCompletionTool[]): Set<string> {
-  const names = new Set<string>()
-
-  for (const tool of toolList) {
-    if (tool.type !== 'function') {
-      continue
-    }
-    names.add(tool.function.name)
-  }
-
-  return names
-}
-
-async function createCombinedToolProvider(): Promise<ToolProvider> {
-  const localProvider = createLocalToolProvider()
-  const chromeProvider = await createChromeToolProvider()
-
-  const localToolNames = collectFunctionToolNames(localProvider.tools)
-  const chromeToolNames = collectFunctionToolNames(chromeProvider.tools)
-
-  for (const toolName of localToolNames) {
-    if (chromeToolNames.has(toolName)) {
-      throw new Error(`工具名冲突: ${toolName}`)
-    }
-  }
-
-  return {
-    mode: 'combined',
-    tools: [...localProvider.tools, ...chromeProvider.tools],
-    instructionRole: 'system',
-    systemPrompt:
-      '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。',
-    maxSteps: LOCAL_MAX_STEPS,
-    toolLogLabel: 'tool',
-    resultLogLabel: 'tool result',
-    previewLimit: 500,
-    executeTool: async (toolName, rawArguments) => {
-      if (localToolNames.has(toolName)) {
-        return localProvider.executeTool(toolName, rawArguments)
-      }
-      if (chromeToolNames.has(toolName)) {
-        return chromeProvider.executeTool(toolName, rawArguments)
-      }
-
-      throw new Error(`未知工具: ${toolName}`)
-    },
-    close: async () => {
-      await chromeProvider.close()
-      await localProvider.close()
-    },
-  }
-}
-
-async function createToolProvider(): Promise<ToolProvider> {
-  return createCombinedToolProvider()
-}
-
 async function runAgent(
   userPrompt: string,
   provider: ToolProvider,
 ): Promise<void> {
   const memory: MemoryState = { value: '' }
   const messages: AgentMessage[] = [
-    createPromptMessage(provider.instructionRole, provider.systemPrompt),
+    createPromptMessage(provider.instructionRole, SYSTEM_PROMPT),
     createUserMessage(userPrompt),
   ]
 
@@ -750,7 +700,10 @@ async function runAgent(
 
 async function main(): Promise<void> {
   const cliOptions = parseCliOptions(process.argv.slice(2))
-  const prompt = await readPromptFromCli('请输入 prompt: ', cliOptions.promptArgs)
+  const prompt = await readPromptFromCli(
+    '请输入 prompt: ',
+    cliOptions.promptArgs,
+  )
   const provider = await createToolProvider()
   await runAgent(prompt, provider)
 }
