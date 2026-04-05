@@ -139,11 +139,11 @@ npm start -- "打开 https://example.com ，读取页面标题，然后告诉我
 
 ### Chrome MCP 配置
 
-默认会追加这些参数：
+默认不会写死 `headless/isolated` 参数，行为由环境变量和用户输入共同决定：
 
-- `--slim`
-- `--headless`
-- `--isolated`
+- 环境变量优先：`CHROME_MCP_HEADLESS` / `CHROME_MCP_ISOLATED`
+- 若未设置环境变量，会先让模型根据用户输入判定 `headless/isolated`
+- 未命中时走 `chrome-devtools-mcp` 自身默认行为
 
 可选环境变量：
 
@@ -175,8 +175,8 @@ CHROME_MCP_BROWSER_URL=http://127.0.0.1:9222 npm start
 ### 注意
 
 - `chrome-devtools-mcp` 已经作为项目依赖安装在 [package.json]
-- 这个示例默认会给 `chrome-devtools-mcp` 追加 `--slim --headless --isolated`
-- 这样更适合学习：工具少、不会干扰你平时打开的 Chrome
+- 这个示例不再把 `headless/isolated` 写死在代码中
+- tool 是否调用、以及调用时参数由模型基于用户输入自动决定；浏览器启动参数可由 env 覆盖
 - Chrome MCP 模式要求 Node.js `20.19.0+` 或 `22.12.0+`
 - 仅把 MCP server 内置到了项目里，没有内置 Chrome 浏览器二进制；机器上仍然需要可用的 Chrome
 

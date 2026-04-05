@@ -89,7 +89,7 @@ type ChromeConnectionMode =
   | 'auto-connect'
 
 const SYSTEM_PROMPT =
-  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。需要时调用工具，最后用中文给出简洁答案。'
+  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。你默认使用用户的浏览器，需要时调用工具，最后用中文给出简洁答案。'
 
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
@@ -150,6 +150,24 @@ function readBooleanEnv(name: string, fallback: boolean): boolean {
   }
 
   return fallback
+}
+
+function readOptionalBooleanEnv(name: string): boolean | undefined {
+  const rawValue = process.env[name]
+  if (!rawValue) {
+    return undefined
+  }
+
+  const normalized = rawValue.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) {
+    return true
+  }
+
+  if (['0', 'false', 'no', 'off'].includes(normalized)) {
+    return false
+  }
+
+  return undefined
 }
 
 function resolveInsideRoot(target = '.'): string {
@@ -350,11 +368,60 @@ function readChromeConnectionMode(): ChromeConnectionMode {
   return 'launch'
 }
 
-function buildChromeMcpArgs(): string[] {
+type ChromeLaunchOverrides = {
+  headless?: boolean
+  isolated?: boolean
+}
+
+async function inferChromeLaunchOverridesByModel(
+  userPrompt: string,
+): Promise<ChromeLaunchOverrides> {
+  const response = await client.chat.completions.create({
+    model: SUMMARY_MODEL,
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content:
+          '你是浏览器启动参数判定器。只返回 JSON：{"headless": boolean, "isolated": boolean}。没有明确要求时都返回 false。',
+      },
+      {
+        role: 'user',
+        content: userPrompt,
+      },
+    ],
+  })
+
+  const content = normalizeMessageContent(response.choices[0]?.message?.content)
+  if (!content) {
+    return {}
+  }
+
+  try {
+    const parsed = JSON.parse(content) as {
+      headless?: unknown
+      isolated?: unknown
+    }
+    const result: ChromeLaunchOverrides = {}
+    if (typeof parsed.headless === 'boolean') {
+      result.headless = parsed.headless
+    }
+    if (typeof parsed.isolated === 'boolean') {
+      result.isolated = parsed.isolated
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+async function buildChromeMcpArgs(userPrompt: string): Promise<string[]> {
   const args = [CHROME_MCP_BIN_PATH]
   const connectionMode = readChromeConnectionMode()
+  const promptOverrides = await inferChromeLaunchOverridesByModel(userPrompt)
 
-  appendBooleanCliFlag(args, '--slim', readBooleanEnv('CHROME_MCP_SLIM', true))
+  const slimFlag = readOptionalBooleanEnv('CHROME_MCP_SLIM')
+  appendBooleanCliFlag(args, '--slim', slimFlag === true)
 
   if (connectionMode === 'browser-url') {
     appendCliArg(args, '--browserUrl', process.env.CHROME_MCP_BROWSER_URL)
@@ -365,16 +432,17 @@ function buildChromeMcpArgs(): string[] {
     appendBooleanCliFlag(args, '--autoConnect', true)
     appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL || 'stable')
   } else {
-    appendBooleanCliFlag(
-      args,
-      '--headless',
-      readBooleanEnv('CHROME_MCP_HEADLESS', true),
-    )
-    appendBooleanCliFlag(
-      args,
-      '--isolated',
-      readBooleanEnv('CHROME_MCP_ISOLATED', true),
-    )
+    const headlessFlag =
+      readOptionalBooleanEnv('CHROME_MCP_HEADLESS') ??
+      promptOverrides.headless ??
+      false
+    const isolatedFlag =
+      readOptionalBooleanEnv('CHROME_MCP_ISOLATED') ??
+      promptOverrides.isolated ??
+      false
+
+    appendBooleanCliFlag(args, '--headless', headlessFlag)
+    appendBooleanCliFlag(args, '--isolated', isolatedFlag)
     appendCliArg(args, '--channel', process.env.CHROME_MCP_CHANNEL)
     appendCliArg(
       args,
@@ -423,13 +491,16 @@ function buildChromeMcpArgs(): string[] {
   return args
 }
 
-async function loadChromeMcpServerConfig(): Promise<StdioServerParameters> {
+async function loadChromeMcpServerConfig(
+  userPrompt: string,
+): Promise<StdioServerParameters> {
   assertChromeMcpNodeVersion()
   await assertChromeMcpInstalled()
+  const mcpArgs = await buildChromeMcpArgs(userPrompt)
 
   return {
     command: process.execPath,
-    args: buildChromeMcpArgs(),
+    args: mcpArgs,
     env: inheritProcessEnv(),
     cwd: ROOT_DIR,
   }
@@ -526,8 +597,8 @@ function collectFunctionToolNames(toolList: ChatCompletionTool[]): Set<string> {
   return names
 }
 
-async function createToolProvider(): Promise<ToolProvider> {
-  const serverConfig = await loadChromeMcpServerConfig()
+async function createToolProvider(userPrompt: string): Promise<ToolProvider> {
+  const serverConfig = await loadChromeMcpServerConfig(userPrompt)
   const transport = new StdioClientTransport({
     ...serverConfig,
     stderr: 'pipe',
@@ -704,7 +775,7 @@ async function main(): Promise<void> {
     '请输入 prompt: ',
     cliOptions.promptArgs,
   )
-  const provider = await createToolProvider()
+  const provider = await createToolProvider(prompt)
   await runAgent(prompt, provider)
 }
 
