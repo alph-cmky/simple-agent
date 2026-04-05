@@ -89,7 +89,7 @@ type ChromeConnectionMode =
   | 'auto-connect'
 
 const SYSTEM_PROMPT =
-  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。默认优先复用当前浏览器会话与登录态，不要主动创建隔离上下文；仅在用户明确要求时才使用隔离方式。若用户指定了账号（如“使用某个 Google 账号”），先在目标站点检查当前登录账号是否匹配，再继续执行任务；若不匹配，先明确告知并给出下一步操作建议。需要时调用工具，最后用中文给出简洁答案。'
+  '你是一个通用型agent。你可调用本地文件工具以及 Chrome DevTools MCP 工具。默认优先复用当前浏览器会话与登录态，不要主动创建隔离上下文；仅在用户明确要求时才使用隔离方式。若用户指定了账号（如“使用某个 Google 账号”），先在目标站点检查当前登录账号是否匹配，再继续执行任务；若不匹配，先明确告知并给出下一步操作建议。需要时调用工具，最后用中文给出简洁答案。今天是2026年4月5日。'
 
 function requireSetting(value: string | undefined, message: string): string {
   if (value) {
@@ -101,13 +101,13 @@ function requireSetting(value: string | undefined, message: string): string {
 }
 
 const API_KEY = requireSetting(
-  process.env.STEP_API_KEY ?? process.env.OPENAI_API_KEY,
-  'Missing STEP_API_KEY or OPENAI_API_KEY',
+  process.env.API_KEY ?? process.env.OPENAI_API_KEY,
+  'Missing API_KEY or OPENAI_API_KEY',
 )
-const BASE_URL = process.env.STEP_BASE_URL ?? process.env.OPENAI_BASE_URL
+const BASE_URL = process.env.BASE_URL ?? process.env.OPENAI_BASE_URL
 const MODEL = requireSetting(
-  process.env.STEP_MODEL ?? process.env.OPENAI_MODEL,
-  'Missing STEP_MODEL or OPENAI_MODEL',
+  process.env.MODEL ?? process.env.OPENAI_MODEL,
+  'Missing MODEL or OPENAI_MODEL',
 )
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL ?? MODEL
 const ROOT_DIR = process.cwd()

@@ -22,13 +22,13 @@ npm install
 cp .env.example .env
 ```
 
-然后把 `.env` 里的 key 改成你自己的 Step API Key。
+然后把 `.env` 里的 key 改成你自己的模型平台配置。
 
 当前示例优先读取这几个环境变量：
 
-- `STEP_API_KEY`
-- `STEP_BASE_URL`
-- `STEP_MODEL`
+- `API_KEY`
+- `BASE_URL`
+- `MODEL`
 
 同时也兼容：
 
